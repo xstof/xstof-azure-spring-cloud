@@ -1,0 +1,137 @@
+# set up azure spring cloud service in a virtual network
+
+## NOTE: you need the spring-cloud extension: az extension add --name spring-cloud
+## SAME SCENARIO ON GH GITTE: https://github.com/vermegi/azure-spring-cloud-demos/blob/main/08%20vnet/vnet_better.azcli
+
+## create resource group
+
+RG=xstof-spring-cloud
+LOCATION=westeurope
+az group create -n $RG -l $LOCATION
+
+## set up network
+VNETNAME=xstof-spring-cloud-vnet
+SUBNETNAME_VM=xstof-asc-vm-snet
+az network vnet create -g $RG -n $VNETNAME -l $LOCATION --address-prefixes 10.1.0.0/16 --subnet-name service-runtime-subnet --subnet-prefixes 10.1.0.0/28
+az network vnet subnet create -g $RG --vnet-name $VNETNAME --address-prefixes 10.1.1.0/28 -n apps-subnet
+az network vnet subnet create -g $RG --vnet-name $VNETNAME --address-prefixes 10.1.2.0/28 -n $SUBNETNAME_VM
+
+## grant permission on the vnet
+VIRTUAL_NETWORK_RESOURCE_ID=`az network vnet show \
+    --name $VNETNAME \
+    --resource-group $RG \
+    --query "id" \
+    --output tsv`
+echo "virtual network id: $VIRTUAL_NETWORK_RESOURCE_ID"
+
+az role assignment create \
+    --role "Owner" \
+    --scope ${VIRTUAL_NETWORK_RESOURCE_ID} \
+    --assignee e8de9221-a19c-4c81-b814-fd37c6caf9d2
+
+## create azure spring cloud service
+SPRING_CLOUD_NAME=xstof-spring-cloud
+az spring-cloud create  \
+    -g "$RG" \
+    -n "$SPRING_CLOUD_NAME" \
+    --vnet $VNETNAME \
+    --service-runtime-subnet service-runtime-subnet \
+    --app-subnet apps-subnet \
+    --enable-java-agent \
+    --sku standard \
+    -l $LOCATION
+
+## deploy app to asc
+az configure --defaults group=$RG
+az configure --defaults spring-cloud=$SPRING_CLOUD_NAME
+az configure --defaults location=$LOCATION
+
+cd ./sample-apps/app
+./mvnw clean package -DskipTests
+
+## create app on spring cloud:
+APPNAME=xstof-test-app
+az spring-cloud app create -n $APPNAME -s $SPRING_CLOUD_NAME -g $RG --assign-endpoint true
+
+## create private DNS zone:
+az network private-dns zone create -g $RG \
+   -n private.azuremicroservices.io
+az network private-dns link vnet create -g $RG -n azure-spring-cloud-dns-link \
+   -z private.azuremicroservices.io -v $VNETNAME -e false
+SERVICE_RUNTIME_RG=`az spring-cloud show -g $RG -n $SPRING_CLOUD_NAME --query \
+"properties.networkProfile.serviceRuntimeNetworkResourceGroup" -o tsv`
+IP_ADDRESS=`az network lb frontend-ip list --lb-name kubernetes-internal -g \
+$SERVICE_RUNTIME_RG --query "[0].privateIpAddress" -o tsv`
+az network private-dns record-set a add-record \
+  -g $RG \
+  -z private.azuremicroservices.io \
+  -n '*' \
+  -a $IP_ADDRESS
+
+## deploy app onto spring cloud:
+az spring-cloud app deploy -n $APPNAME -s $SPRING_CLOUD_NAME -g $RG --jar-path target/hellospring-0.0.1-SNAPSHOT.jar
+
+## create vm for testing
+az vm create --vnet-name $VNETNAME --subnet $SUBNETNAME_VM --location $LOCATION \
+    --resource-group $RG \
+    --name jumpbox \
+    --image win2019datacenter \
+    --admin-username xstof 
+
+## Add custom domain to spring cloud app
+KV_RG=xstofdomain
+KV_NAME=xstof-domain-kv
+CERT_NAME_IN_ASC=xstof-wildcard
+CERT_NAME_IN_KV=wildcard-xstof-net-with-intermediaries
+DOMAIN_NAME=myapp.xstof.net
+VAULTURI=$(az keyvault show -n $KV_NAME -g $KV_RG --query properties.vaultUri -o tsv)
+az keyvault set-policy -g $KV_RG -n $KV_NAME  --object-id 938df8e2-2b9d-40b1-940c-c75c33494239 --certificate-permissions get list --secret-permissions get list
+az spring-cloud certificate add --name $CERT_NAME_IN_ASC --resource-group $RG --vault-certificate-name $CERT_NAME_IN_KV --vault-uri $VAULTURI
+az spring-cloud app custom-domain bind --domain-name $DOMAIN_NAME --certificate $CERT_NAME_IN_ASC --app $APPNAME
+
+## Note: at this point there's a custom domain attached to the app, but no resolution yet from DNS
+## can test this through changing hosts file /windows/system32/drivers/etc/hosts file
+
+## Set up application gateway
+
+### create subnet for appgw
+APPGW_SUBNET=xstof-spring-cloud-appgw-snet
+APPGW_IPNAME=xstof-spring-cloud-appgw-ip
+APPGW_NAME=xstof-spring-cloud-appgw
+SPRING_APP_PRIVATE_FQDN="$APPNAME.private.azuremicroservices.io"
+
+az network vnet subnet create -g $RG --vnet-name $VNETNAME --address-prefixes 10.1.3.0/28 -n $APPGW_SUBNET
+az network public-ip create \
+    --resource-group $RG \
+    --location $LOCATION \
+    --name $APPGW_IPNAME \
+    --allocation-method Static \
+    --sku Standard
+
+KEYVAULT_SECRET_ID_FOR_CERT=$(az keyvault certificate show --name $CERT_NAME_IN_KV --vault-name $KV_NAME --query sid -o tsv)
+APPGW_IDENTITY_NAME=xstof-spring-cloud-appgw-identity
+az identity create -g $RG -n $APPGW_IDENTITY_NAME
+APPGW_IDENTITY_CLIENTID=$(az identity show -g $RG -n $APPGW_IDENTITY_NAME -o tsv --query clientId)
+APPGW_IDENTITY_OID=$(az ad sp show --id $APPGW_IDENTITY_CLIENTID --query objectId --out tsv)
+APPGW_IDENTITY_RESOURCEID=$(az identity show -g $RG -n $APPGW_IDENTITY_NAME -o tsv --query id)
+az keyvault set-policy --name $KV_NAME -g $KV_RG --object-id $APPGW_IDENTITY_OID --secret-permissions get list --certificate-permissions get list
+
+az network application-gateway create \
+    --name $APPGW_NAME \
+    --resource-group $RG \
+    --location $LOCATION \
+    --capacity 2 \
+    --sku Standard_v2 \
+    --frontend-port 443 \
+    --http-settings-cookie-based-affinity Disabled \
+    --http-settings-port 443 \
+    --http-settings-protocol Https \
+    --public-ip-address $APPGW_IPNAME \
+    --vnet-name $VNETNAME \
+    --subnet $APPGW_SUBNET \
+    --servers $SPRING_APP_PRIVATE_FQDN \
+    --key-vault-secret-id $KEYVAULT_SECRET_ID_FOR_CERT \
+    --identity $APPGW_IDENTITY_RESOURCEID
+
+
+az network application-gateway http-settings update --gateway-name $APPGW_NAME -g $RG --host-name-from-backend-pool false --host-name $DOMAIN_NAME --name appGatewayBackendHttpSettings
