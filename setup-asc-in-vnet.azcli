@@ -113,7 +113,7 @@ APPGW_IDENTITY_NAME=xstof-spring-cloud-appgw-identity
 az identity create -g $RG -n $APPGW_IDENTITY_NAME
 APPGW_IDENTITY_CLIENTID=$(az identity show -g $RG -n $APPGW_IDENTITY_NAME -o tsv --query clientId)
 APPGW_IDENTITY_OID=$(az ad sp show --id $APPGW_IDENTITY_CLIENTID --query objectId --out tsv)
-APPGW_IDENTITY_RESOURCEID=$(az identity show -g $RG -n $APPGW_IDENTITY_NAME -o tsv --query id)
+# APPGW_IDENTITY_RESOURCEID=$(az identity show -g $RG -n $APPGW_IDENTITY_NAME -o tsv --query id)
 az keyvault set-policy --name $KV_NAME -g $KV_RG --object-id $APPGW_IDENTITY_OID --secret-permissions get list --certificate-permissions get list
 
 az network application-gateway create \
@@ -131,7 +131,7 @@ az network application-gateway create \
     --subnet $APPGW_SUBNET \
     --servers $SPRING_APP_PRIVATE_FQDN \
     --key-vault-secret-id $KEYVAULT_SECRET_ID_FOR_CERT \
-    --identity $APPGW_IDENTITY_RESOURCEID
+    --identity $APPGW_IDENTITY_NAME
 
 
 az network application-gateway http-settings update --gateway-name $APPGW_NAME -g $RG --host-name-from-backend-pool false --host-name $DOMAIN_NAME --name appGatewayBackendHttpSettings
