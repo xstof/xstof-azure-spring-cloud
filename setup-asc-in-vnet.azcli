@@ -134,4 +134,15 @@ az network application-gateway create \
     --identity $APPGW_IDENTITY_NAME
 
 
-az network application-gateway http-settings update --gateway-name $APPGW_NAME -g $RG --host-name-from-backend-pool false --host-name $DOMAIN_NAME --name appGatewayBackendHttpSettings
+az network application-gateway http-settings update \
+    --gateway-name $APPGW_NAME \
+    --resource-group $RG \
+    --host-name-from-backend-pool false \
+    --host-name $DOMAIN_NAME \
+    --name appGatewayBackendHttpSettings
+
+## Check backend health:
+az network application-gateway show-backend-health --name $APPGW_NAME -g $RG
+
+## Find public ip for Application Gateway:
+az network public-ip show --name $APPGW_IPNAME -g $RG -o tsv --query [ipAddress]
