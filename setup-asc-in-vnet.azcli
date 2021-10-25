@@ -78,7 +78,24 @@ az vm create --vnet-name $VNETNAME --subnet $SUBNETNAME_VM --location $LOCATION 
     --image win2019datacenter \
     --admin-username xstof 
 
+## ========== OPTIONAL: IN CASE OF SELF-SIGNED CERTIFICATES ==========
+# create a keyvault first
+KV_RG=$RG
+KV_NAME=xstof-asc-kv
+az keyvault create -g $KV_RG -l $LOCATION --name $KV_NAME
+VAULTURI=$(az keyvault show -n $KV_NAME -g $KV_RG --query properties.vaultUri -o tsv)
+
+# create a self-signed certificate in it
+CERT_NAME_IN_KV=xstof-cert-for-asc
+CERT_NAME_IN_ASC=xstof-cert-for-asc
+DOMAIN_NAME=myapp.mydomain.com
+KV_CERT_POLICY_GENERIC=$(cat kv-self-signed-cert-policy.json)
+KV_CERT_POLICY_MYDOMAIN=${KV_CERT_POLICY_GENERIC//__CERT_DOMAIN_NAME__/$DOMAIN_NAME}
+az keyvault certificate create --vault-name $KV_NAME -n $CERT_NAME_IN_KV -p "$KV_CERT_POLICY_MYDOMAIN"
+## ===================================================================
+
 ## Add custom domain to spring cloud app
+## (note: don't add these vars anymore when created a self signed cert in the above section)
 KV_RG=xstofdomain
 KV_NAME=xstof-domain-kv
 CERT_NAME_IN_ASC=xstof-wildcard
@@ -145,4 +162,4 @@ az network application-gateway http-settings update \
 az network application-gateway show-backend-health --name $APPGW_NAME -g $RG
 
 ## Find public ip for Application Gateway:
-az network public-ip show --name $APPGW_IPNAME -g $RG -o tsv --query [ipAddress]
+APPGW_IP=$(az network public-ip show --name $APPGW_IPNAME -g $RG -o tsv --query [ipAddress])
