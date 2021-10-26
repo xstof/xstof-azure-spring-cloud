@@ -81,7 +81,7 @@ az vm create --vnet-name $VNETNAME --subnet $SUBNETNAME_VM --location $LOCATION 
 ## ========== OPTIONAL: IN CASE OF SELF-SIGNED CERTIFICATES ==========
 # create a keyvault first
 KV_RG=$RG
-KV_NAME=xstof-asc-kv
+KV_NAME=xstof-asc-kv2
 az keyvault create -g $KV_RG -l $LOCATION --name $KV_NAME
 VAULTURI=$(az keyvault show -n $KV_NAME -g $KV_RG --query properties.vaultUri -o tsv)
 
@@ -157,6 +157,10 @@ az network application-gateway http-settings update \
     --host-name-from-backend-pool false \
     --host-name $DOMAIN_NAME \
     --name appGatewayBackendHttpSettings
+
+## FOR SELF SIGNED CERTS ONLY - Download the public portion of the certificate from Key Vault and upload as a root cert:
+az keyvault certificate download --vault-name $KV_NAME -n $CERT_NAME_IN_KV -f ./selfsignedcert.crt -e DER
+az network application-gateway root-cert create --cert-file ./selfsignedcert.crt --gateway-name $APPGW_NAME --name MySelfSignedTrustedRootCert --resource-group $RG
 
 ## Check backend health:
 az network application-gateway show-backend-health --name $APPGW_NAME -g $RG
