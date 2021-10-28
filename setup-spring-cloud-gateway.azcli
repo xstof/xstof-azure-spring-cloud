@@ -1,0 +1,7 @@
+az spring-cloud app create -n gateway --is-public true
+
+# build spring cloud gateway app:
+./mvnw clean package -DskipTests
+
+# deploy spring cloud gateway app:
+az spring-cloud app deploy -n gateway --jar-path target/demo-0.0.1-SNAPSHOT.jar
